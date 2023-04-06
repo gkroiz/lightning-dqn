@@ -8,8 +8,16 @@ from torch import nn
 from utils import ReplayBuffer
 from utils import Experience
 
+import torch_xla.core.xla_model as xm
+
 class Agent:
-    """Base Agent class handeling the interaction with the environment."""
+    """Base Agent class handling the interaction with the environment.
+
+    >>> env = gym.make("CartPole-v1")
+    >>> buffer = ReplayBuffer(10)
+    >>> Agent(env, buffer)  # doctest: +ELLIPSIS
+    <...reinforce_learn_Qnet.Agent object at ...>
+    """
 
     def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer) -> None:
         """
@@ -20,11 +28,11 @@ class Agent:
         self.env = env
         self.replay_buffer = replay_buffer
         self.reset()
-        self.state = self.env.reset()
+        self.state, _ = self.env.reset()
 
     def reset(self) -> None:
-        """Resents the environment and updates the state."""
-        self.state = self.env.reset()
+        """Resets the environment and updates the state."""
+        self.state, _ = self.env.reset()
 
     def get_action(self, net: nn.Module, epsilon: float, device: str) -> int:
         """Using the given network, decide what action to carry out using an epsilon-greedy policy.
@@ -40,9 +48,9 @@ class Agent:
         if np.random.random() < epsilon:
             action = self.env.action_space.sample()
         else:
-            state = torch.tensor([self.state])
+            state = torch.tensor([self.state], device=xm.xla_device())
 
-            if device not in ["cpu"]:
+            if device not in ["cpu", "tpu"]:
                 state = state.cuda(device)
 
             q_values = net(state)
@@ -52,12 +60,7 @@ class Agent:
         return action
 
     @torch.no_grad()
-    def play_step(
-        self,
-        net: nn.Module,
-        epsilon: float = 0.0,
-        device: str = "cpu",
-    ) -> Tuple[float, bool]:
+    def play_step(self, net: nn.Module, epsilon: float = 0.0, device: str = "tpu") -> Tuple[float, bool]:
         """Carries out a single interaction step between the agent and the environment.
 
         Args:
@@ -72,10 +75,10 @@ class Agent:
         action = self.get_action(net, epsilon, device)
 
         # do step in the environment
-        new_state, reward, done, truncated, _ = self.env.step(action)
+        new_state, reward, terminated, truncated , info = self.env.step(action)
+        done = truncated or terminated
 
         exp = Experience(self.state, action, reward, done, new_state)
-
         self.replay_buffer.append(exp)
 
         self.state = new_state
